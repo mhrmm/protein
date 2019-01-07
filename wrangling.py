@@ -16,7 +16,9 @@ class DataSplitter:
         self.dev = dict()
         self.test = dict()
         for category in instances:
-            train, dev, test = trainDevTestSplit(instances[category], dev_size, test_size)
+            train, dev, test = trainDevTestSplit(instances[category], 
+                                                 dev_size, 
+                                                 test_size)
             self.train[category] = train
             self.dev[category] = dev
             self.test[category] = test
