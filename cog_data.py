@@ -20,8 +20,8 @@ Download these from:
   ftp://ftp.ncbi.nih.gov/pub/COG/COG2014/data
 
 """
-COG_FILE = 'data/cog/cog2003-2014.csv'
-DATA_FILE = 'data/cog/prot2003-2014.fa'
+COG_FILE = '../data/cog/cog2003-2014.csv'
+DATA_FILE = '../data/cog/prot2003-2014.fa'
 MAX_PROTEIN_LENGTH = 1000 # from Seo et al 2018
 
 def get_protein_family_info(filename):
@@ -76,7 +76,13 @@ def get_subset(protein_family, family_sizes, proteins, minimum_family_size):
     print('After quorum filtering: {}'.format(quorum))
     return unified
 
+protein_family, family_sizes = get_protein_family_info(COG_FILE)
+proteins = get_protein_sequences(DATA_FILE)
+unified = get_subset(protein_family, family_sizes, proteins, 10000)
+with open('cog10000.json', 'w') as outfile:
+    json.dump(unified, outfile)  
 
+"""
 protein_family, family_sizes = get_protein_family_info(COG_FILE)
 proteins = get_protein_sequences(DATA_FILE)
 unified = get_subset(protein_family, family_sizes, proteins, 100)
@@ -88,3 +94,4 @@ with open('cog250.json', 'w') as outfile:
 unified = get_subset(protein_family, family_sizes, proteins, 500)
 with open('cog500.json', 'w') as outfile:
     json.dump(unified, outfile)
+"""
