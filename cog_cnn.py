@@ -5,6 +5,21 @@ from torch import optim
 from cog import JsonDataset, get_samplers, batched_loader
 
 
+if torch.cuda.is_available():
+    print("using gpu")
+    cuda = torch.device('cuda:0')
+    FloatTensor = torch.FloatTensor
+    LongTensor = torch.LongTensor
+    def cudaify(model):
+        return model.cuda()
+else: 
+    print("using cpu")
+    cuda = torch.device('cpu')
+    FloatTensor = torch.FloatTensor
+    LongTensor = torch.LongTensor
+    def cudaify(model):
+        return model
+
 
 def extract_alphabet(dataset):
     symbols = set()
@@ -45,9 +60,9 @@ class Tensorize:
         words = Tensorize.words_to_tensor(data['seq'], 
                                               self.symbol_vocab, 
                                               self.max_word_length).float()
-        category = torch.Tensor([self.category_vocab(c) 
-                             for c in data['family']]).long()
-        return words, category
+        category = LongTensor([self.category_vocab(c) 
+                             for c in data['family']])
+        return cudaify(words), cudaify(category)
         
     @staticmethod
     def words_to_tensor(words, vocab, max_word_length):
@@ -141,6 +156,8 @@ def train_network(net, tensorize, train_loader, val_loader, n_epochs, learning_r
     print("learning_rate=", learning_rate)
     print("=" * 30)
     
+    #max_batches_per_epoch = 100
+    #n_batches = min(max_batches_per_epoch, len(train_loader))
     n_batches = len(train_loader)
     print_every = n_batches // 10    
     loss = torch.nn.CrossEntropyLoss()
@@ -149,22 +166,26 @@ def train_network(net, tensorize, train_loader, val_loader, n_epochs, learning_r
     for epoch in range(n_epochs):
         running_loss = 0.0
         start_time = time.time()
-        total_train_loss = 0        
+        total_train_loss = 0 
+        #train_iter = iter(train_loader)
+        #for i in range(max_batches_per_epoch):
         for i, data in enumerate(train_loader, 0):
+            #data = next(train_iter)
             inputs, labels = tensorize(data)
             optimizer.zero_grad()
             outputs = net(inputs)
             loss_size = loss(outputs, labels)
             loss_size.backward()
             optimizer.step()
-            running_loss += loss_size.data[0]
-            total_train_loss += loss_size.data[0]
+            running_loss += loss_size.data.item()
+            total_train_loss += loss_size.data.item()
             if (i + 1) % (print_every + 1) == 0:
                 print("Epoch {}, {:d}% \t train_loss: {:.2f} took: {:.2f}s".format(
                         epoch+1, int(100 * (i+1) / n_batches), 
                         running_loss / print_every, time.time() - start_time))
                 running_loss = 0.0
                 start_time = time.time()
+            
             
         #At the end of the epoch, do a pass on the validation set
         total_val_loss = 0
@@ -177,7 +198,7 @@ def train_network(net, tensorize, train_loader, val_loader, n_epochs, learning_r
             correct_inc, total_inc = accuracy(val_outputs, labels)
             correct += correct_inc
             total += total_inc
-            total_val_loss += val_loss_size.data[0]
+            total_val_loss += val_loss_size.data.item()
             
         print("Validation loss = {:.2f}".format(total_val_loss / len(val_loader)))
         print("Accuracy = {:.2f}".format(correct/total))
@@ -187,18 +208,19 @@ def train_network(net, tensorize, train_loader, val_loader, n_epochs, learning_r
  
     
     
-HIDDEN_SIZE = 18
+HIDDEN_SIZE = 1000
 KERNEL_SIZE = 7
 PADDING = KERNEL_SIZE//2
    
     
-all_data = JsonDataset('data/var7.10.json')
-#all_data = JsonDataset('cog10000.json')
-train_sampler, val_sampler, test_sampler = get_samplers(all_data, .25, .25)
+#all_data = JsonDataset('data/var7.10.json')
+all_data = JsonDataset('cog500.json')
+train_sampler, val_sampler, test_sampler = get_samplers(all_data, .05, .25)
   
 category_vocab = Vocab(extract_categories(all_data))
 char_vocab = Vocab(extract_alphabet(all_data))
 CNN = SimpleCNN(len(char_vocab.alphabet), HIDDEN_SIZE, KERNEL_SIZE, len(category_vocab))
+CNN = cudaify(CNN)
 
 train_loader = batched_loader(all_data, train_sampler, 32)
 val_loader = batched_loader(all_data, val_sampler, 5)
