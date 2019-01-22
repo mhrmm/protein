@@ -33,12 +33,75 @@ class JsonDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.data[idx]
+    
+def families(data):
+    families = set()
+    for datum in data:
+        families.add(datum['family'])
+    return families
 
+def discrim_subset(data, family):
+    in_family = set()
+    for (i, datum) in enumerate(data):
+        if datum['family'] == family:
+            in_family.add(i)
+    out_of_family = set()
+    while len(out_of_family) < len(in_family):
+        sample = random.randint(0, len(data) - 1)
+        if sample not in in_family:
+            out_of_family.add(sample)
+    result = []
+    for i in in_family:
+        result.append(data[i])
+    for i in out_of_family:
+        datum = data[i]
+        datum['family'] = 'negative'
+        result.append(datum)
+    return result
+    
+def discrim_subset_ids(data, family):
+    in_family = set()
+    for (i, datum) in enumerate(data):
+        if datum['family'] == family:
+            in_family.add(i)
+    out_of_family = set()
+    while len(out_of_family) < len(in_family):
+        sample = random.randint(0, len(data) - 1)
+        if sample not in in_family:
+            out_of_family.add(sample)
+    return sorted(list(in_family)), sorted(list(out_of_family))
 
-def get_samplers(dataset, dev_percent, test_percent):
-    dev_size = int(dev_percent * len(dataset))
-    test_size = int(test_percent * len(dataset))
-    train_ids = set(range(len(dataset)))
+class FamilyMembershipDataset(Dataset):
+    def __init__(self, base_data, family):
+        self.base_data = base_data
+        self.family = family
+            
+    def __len__(self):
+        return len(self.base_data)
+
+    def __getitem__(self, idx):
+        result = {k: v for (k,v) in self.base_data[idx].items()}        
+        if result['family'] != self.family:
+            result['family'] = 'negative'
+        return result        
+    
+def split_data(dataset, dev_percent, test_percent):
+    all_ids = range(len(dataset))
+    dev_size = int(dev_percent * len(all_ids))
+    test_size = int(test_percent * len(all_ids))
+    train_ids = set(all_ids)
+    dev_ids = random.sample(train_ids, dev_size)
+    train_ids = train_ids - set(dev_ids)
+    test_ids = random.sample(train_ids, test_size)
+    train_ids = list(train_ids - set(test_ids))
+    return train_ids, dev_ids, test_ids
+  
+    
+
+def get_samplers(dataset, all_ids, dev_percent, test_percent):
+    dev_size = int(dev_percent * len(all_ids))
+    test_size = int(test_percent * len(all_ids))
+    train_ids = set(all_ids)
     dev_ids = random.sample(train_ids, dev_size)
     train_ids = train_ids - set(dev_ids)
     test_ids = random.sample(train_ids, test_size)

@@ -2,8 +2,10 @@ import time
 import torch
 import torch.nn.functional as F
 from torch import optim
-from cog import JsonDataset, get_samplers, batched_loader
-
+from cog import JsonDataset, get_samplers, batched_loader, discrim_subset_ids
+from cog import families, FamilyMembershipDataset, split_data
+from torch.utils.data.sampler import SubsetRandomSampler
+from copy import deepcopy
 
 if torch.cuda.is_available():
     print("using gpu")
@@ -163,6 +165,8 @@ def train_network(net, tensorize, train_loader, val_loader, n_epochs, learning_r
     loss = torch.nn.CrossEntropyLoss()
     optimizer = optim.Adam(net.parameters(), lr=learning_rate)
     training_start_time = time.time()
+    best_accuracy = -1.0
+    best_net = None
     for epoch in range(n_epochs):
         running_loss = 0.0
         start_time = time.time()
@@ -199,36 +203,117 @@ def train_network(net, tensorize, train_loader, val_loader, n_epochs, learning_r
             correct += correct_inc
             total += total_inc
             total_val_loss += val_loss_size.data.item()
-            
+        if correct/total >= best_accuracy:
+            best_net = deepcopy(net)
         print("Validation loss = {:.2f}".format(total_val_loss / len(val_loader)))
         print("Accuracy = {:.2f}".format(correct/total))
         
         
     print("Training finished, took {:.2f}s".format(time.time() - training_start_time))
- 
+    return best_net
     
+def train_all_categories():
+    HIDDEN_SIZE = 18
+    KERNEL_SIZE = 7
+       
+    #all_data = JsonDataset('data/var7.10.json')
+    all_data = JsonDataset('cog10000.json')
+    train_sampler, val_sampler, test_sampler = get_samplers(all_data, range(len(all_data)), .05, .25)
+      
+    category_vocab = Vocab(extract_categories(all_data))
+    char_vocab = Vocab(extract_alphabet(all_data))
+    CNN = SimpleCNN(len(char_vocab.alphabet), HIDDEN_SIZE, KERNEL_SIZE, len(category_vocab))
+    CNN = cudaify(CNN)
     
-HIDDEN_SIZE = 1000
-KERNEL_SIZE = 7
-PADDING = KERNEL_SIZE//2
-   
+    train_loader = batched_loader(all_data, train_sampler, 32)
+    val_loader = batched_loader(all_data, val_sampler, 5)
     
-#all_data = JsonDataset('data/var7.10.json')
-all_data = JsonDataset('cog500.json')
-train_sampler, val_sampler, test_sampler = get_samplers(all_data, .05, .25)
-  
-category_vocab = Vocab(extract_categories(all_data))
-char_vocab = Vocab(extract_alphabet(all_data))
-CNN = SimpleCNN(len(char_vocab.alphabet), HIDDEN_SIZE, KERNEL_SIZE, len(category_vocab))
-CNN = cudaify(CNN)
+    train_network(CNN, Tensorize(char_vocab, category_vocab, 1024), 
+                  train_loader, val_loader, n_epochs=12, learning_rate=0.001)
 
-train_loader = batched_loader(all_data, train_sampler, 32)
-val_loader = batched_loader(all_data, val_sampler, 5)
+def train_one_vs_rest():
+    HIDDEN_SIZE = 18
+    KERNEL_SIZE = 7
+          
+    #all_data = JsonDataset('data/var7.10.json')
+    #all_data = JsonDataset('cog10000.json')
+    
+    full_data = JsonDataset('cog500.json')
+    all_families = list(families(full_data))
+    train_ids, dev_ids, test_ids = split_data(full_data, .05, .02)
+    
+    test_set_probs = {}
+    for test_id in test_ids:
+        test_set_probs[full_data[test_id]['id']] = []
+    
+    trained_families = set()
+    for family in all_families[:5]:
+        family_ids, non_family_ids = discrim_subset_ids(full_data, family)
+        all_ids = family_ids + non_family_ids
+        print('Dataset for {} has {} instances.'.format(family, len(all_ids)))
+        
+        all_data = FamilyMembershipDataset(full_data, family)    
+        train_sampler = SubsetRandomSampler(list(set(train_ids) & set(all_ids)))
+        val_sampler = SubsetRandomSampler(list(set(dev_ids) & set(all_ids)))
+        test_sampler = SubsetRandomSampler(list(set(test_ids) & set(all_ids)))
+    
+        category_vocab = Vocab(extract_categories(all_data))
+        char_vocab = Vocab(extract_alphabet(all_data))
+        CNN = SimpleCNN(len(char_vocab.alphabet), HIDDEN_SIZE, KERNEL_SIZE, len(category_vocab))
+        CNN = cudaify(CNN)
+        
+        train_loader = batched_loader(all_data, train_sampler, 32)
+        val_loader = batched_loader(all_data, val_sampler, 5)
+        test_loader = batched_loader(all_data, test_sampler, 5)
+        tensorize = Tensorize(char_vocab, category_vocab, 1024)
+        
+        net = train_network(CNN, tensorize, 
+                      train_loader, val_loader, n_epochs=12, learning_rate=0.001)
+        
+        #At the end of training, do a pass on the test set
+        correct = 0
+        total = 0
+        for data in test_loader:
+            inputs, labels = tensorize(data)
+            outputs = net(inputs)            
+            correct_inc, total_inc = accuracy(outputs, labels)
+            correct += correct_inc
+            total += total_inc
+        if total > 0:
+            print("Test set accuracy = {:.2f}".format(correct/total))
+        
+        # Record the probabilities for each test set protein
+        full_test_sampler = SubsetRandomSampler(test_ids)
+        sample_size = 1000
+        full_test_loader = batched_loader(all_data, full_test_sampler, sample_size)
+        for data in full_test_loader:
+            inputs, labels = tensorize(data)
+            outputs = net(inputs)
+            #print(outputs.shape)
+            for i in range(outputs.shape[0]):
+                log_likelihood = outputs[i][category_vocab.index_map[family]].item()
+                #print(log_likelihood)
+                test_set_probs[data['id'][i].item()].append((log_likelihood, family))
+                #print(data['id'][i])
+        
+        print("Done recording.")
+        
+        trained_families.add(family)
+        correct = 0
+        total = 0
+        for i in test_ids:
+            datum = full_data[i]
+            if datum['family'] in trained_families:
+                (_, likeliest) = max(test_set_probs[datum['id']])
+                if likeliest == datum['family']:
+                    correct += 1
+                total += 1
+        print("Trained {} out of {} families.".format(len(trained_families), len(all_families)))
+        print("There are {} instances so far.".format(total))
+        print("Current accuracy: {:.2f}".format(correct/total))
 
-train_network(CNN, Tensorize(char_vocab, category_vocab, 1024), 
-              train_loader, val_loader, n_epochs=12, learning_rate=0.001)
 
-def print_patterns(CNN, cutoff=0.2):
+def print_patterns(CNN, char_vocab, cutoff=0.2):
     w = CNN.conv1.weight
     (num_channels, _, window_size) = w.shape
     for channel in range(num_channels):
@@ -244,3 +329,4 @@ def print_patterns(CNN, cutoff=0.2):
         print(strongest)
         
 
+train_all_categories()
