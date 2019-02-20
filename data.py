@@ -21,6 +21,11 @@ class JsonDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.data[idx]
+
+    def select(self, field):
+        for datum in self:
+            yield datum[field]
+
     
 
 def domain(data, category):
