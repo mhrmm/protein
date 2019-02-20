@@ -2,8 +2,10 @@ import time
 import torch
 import torch.nn.functional as F
 from torch import optim
-from cog import JsonDataset, get_samplers, batched_loader, discrim_subset_ids
-from cog import families, FamilyMembershipDataset, split_data
+from torch.utils.data import Dataset, DataLoader
+from data import JsonDataset, get_samplers
+from data import discriminative_subset
+from data import domain, split_data
 from torch.utils.data.sampler import SubsetRandomSampler
 from copy import deepcopy
 
@@ -37,6 +39,11 @@ def extract_categories(dataset):
     return sorted(list(symbols))
         
 
+# DataLoader takes in a dataset and a sampler for loading 
+# (num_workers deals with system level memory) 
+def batched_loader(dataset, sampler, batch_size):
+    return DataLoader(dataset, batch_size=batch_size,
+                      sampler=sampler, num_workers=2)
 
 class Vocab:
     def __init__(self, alphabet):
@@ -231,6 +238,26 @@ def train_all_categories():
     train_network(CNN, Tensorize(char_vocab, category_vocab, 1024), 
                   train_loader, val_loader, n_epochs=12, learning_rate=0.001)
 
+
+
+class FamilyMembershipDataset(Dataset):
+    def __init__(self, base_data, family):
+        self.base_data = base_data
+        self.family = family
+            
+    def __len__(self):
+        return len(self.base_data)
+
+    def __getitem__(self, idx):
+        result = {k: v for (k,v) in self.base_data[idx].items()}        
+        if result['family'] != self.family:
+            result['family'] = 'negative'
+        return result        
+    
+  
+
+
+
 def train_one_vs_rest():
     HIDDEN_SIZE = 18
     KERNEL_SIZE = 7
@@ -239,8 +266,8 @@ def train_one_vs_rest():
     #all_data = JsonDataset('cog10000.json')
     
     full_data = JsonDataset('cog500.json')
-    all_families = list(families(full_data))
-    train_ids, dev_ids, test_ids = split_data(full_data, .05, .02)
+    all_families = list(domain(full_data, 'family'))
+    train_ids, dev_ids, test_ids = split_data(range(len(full_data)), .05, .02)
     
     test_set_probs = {}
     for test_id in test_ids:
@@ -248,7 +275,7 @@ def train_one_vs_rest():
     
     trained_families = set()
     for family in all_families[:5]:
-        family_ids, non_family_ids = discrim_subset_ids(full_data, family)
+        family_ids, non_family_ids = discriminative_subset(full_data, 'family', family)
         all_ids = family_ids + non_family_ids
         print('Dataset for {} has {} instances.'.format(family, len(all_ids)))
         
